@@ -25,16 +25,20 @@ export const db = mysql.createPool({
 // ===============================
 // 2. HELPER: LOG STOK
 // ===============================
-export async function logStock(type, itemId, qty, actor, note, conn) {
-  const sql = `INSERT INTO eatk_stock_log (type, item_id, qty, actor_name, note, date) VALUES (?, ?, ?, ?, ?, NOW())`;
+// NOTE: sekarang ada parameter tambahan "requester" untuk mencatat
+// siapa user yang mengajukan request (khusus log hasil approval transaksi).
+// Untuk log stok manual (input langsung admin), requester dikirim null.
+export async function logStock(type, itemId, qty, actor, requester, note, conn) {
+  const sql = `INSERT INTO eatk_stock_log (type, item_id, qty, actor_name, requester_name, note, date) VALUES (?, ?, ?, ?, ?, ?, NOW())`;
   const connection = conn || db;
-  await connection.execute(sql, [type, itemId, qty, actor, note]);
+  await connection.execute(sql, [type, itemId, qty, actor, requester || null, note]);
 }
 
 app.post('/api/logs', async (req, res) => {
   try {
     const { type, item_id, qty, actor, note } = req.body;
-    await logStock(type, item_id, qty, actor, note);
+    // Manual log dari admin (misal via ManageStockModal) -> tidak ada requester
+    await logStock(type, item_id, qty, actor, null, note);
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ message: e.message });
@@ -44,12 +48,10 @@ app.post('/api/logs', async (req, res) => {
 // ===============================
 // 3. AUTHENTICATION (LOGIN HYBRID)
 // ===============================
-// app itu object, post method
 app.post('/api/login', async (req, res) => {
   try {
     const { username, password } = req.body;
 
-    // Ambil user aktif
     const [users] = await db.execute(
       'SELECT * FROM c_sec_user WHERE username = ? AND is_active = 1', [username]
     );
@@ -62,29 +64,23 @@ app.post('/api/login', async (req, res) => {
     let isMatch = false;
     let needsRehash = false;
 
-    // LOGIKA HYBRID: Cek apakah password di DB sudah Hash atau masih Plain Text
     if (user.password.startsWith('$2b$') && user.password.length >= 60) {
-      // Jika formatnya Hash, gunakan bcrypt compare
       isMatch = await bcrypt.compare(password, user.password);
     } else if (user.password === password) {
-      // Jika formatnya Plain Text (Legacy), bandingkan langsung
       isMatch = true;
-      needsRehash = true; // Tandai untuk di-update otomatis
+      needsRehash = true;
     }
 
     if (!isMatch) return res.status(401).json({ message: 'Password salah.' });
 
-    // AUTO-MIGRATION: Update password lama ke Hash agar aman
     if (needsRehash) {
       const newHash = await bcrypt.hash(password, saltRounds);
       await db.execute('UPDATE c_sec_user SET password=? WHERE id=?', [newHash, user.id]);
       console.log(`[AUTO-HASH] Keamanan akun user "${username}" telah ditingkatkan.`);
     }
 
-    // Ambil detail unit kerja
     const [unit] = await db.execute('SELECT name, alias FROM c_master_unit WHERE id=?', [user.unit_id]);
 
-    // Siapkan data response (hapus password)
     const { password: _, ...userData } = user;
     userData.unit_name = unit.length > 0 ? unit[0].alias : 'Unknown Unit';
 
@@ -105,10 +101,10 @@ app.get('/api/sync-all', async (req, res) => {
     const [atks] = await db.execute('SELECT * FROM eatk_item');
     const [cats] = await db.execute('SELECT * FROM eatk_category');
     const [stocks] = await db.execute('SELECT * FROM eatk_item_unit');
-    // Ambil user tanpa password
     const [users] = await db.execute(
       'SELECT id, full_name, username, email, phone, nip, unit_id, role, is_active, position_name, url_photo, created_at FROM c_sec_user'
     );
+    // requester_name & actor_name ikut terbawa otomatis via SELECT l.*
     const [history] = await db.execute(`
       SELECT l.*, i.name as itemName 
       FROM eatk_stock_log l 
@@ -207,12 +203,10 @@ app.delete('/api/units/:id', async (req, res) => {
 app.post('/api/users', async (req, res) => {
   try {
     const { full_name, username, password, email, phone, nip, unit_id, role, is_active, position_name, url_photo } = req.body;
-    
-    // Cek duplikasi
+
     const [exist] = await db.execute('SELECT id FROM c_sec_user WHERE username=? OR nip=? OR email=?', [username, nip, email]);
     if (exist.length > 0) return res.status(400).json({ message: 'Username/NIP/Email sudah terdaftar!' });
 
-    // Hash Password
     const plainPass = password || '123';
     const hashedPass = await bcrypt.hash(plainPass, saltRounds);
 
@@ -230,14 +224,12 @@ app.put('/api/users/:id', async (req, res) => {
   try {
     const { full_name, username, email, phone, nip, unit_id, role, is_active, position_name, url_photo, password } = req.body;
 
-    // Cek duplikasi saat edit
     const [exist] = await db.execute(
       'SELECT id FROM c_sec_user WHERE (username=? OR email=?) AND id!=?', [username, email, req.params.id]
     );
     if (exist.length > 0) return res.status(400).json({ message: 'Username/Email sudah dipakai user lain.' });
 
     let sql, params;
-    // Update Password hanya jika diisi
     if (password && password.trim() !== "") {
       const hashedPass = await bcrypt.hash(password, saltRounds);
       sql = `UPDATE c_sec_user SET full_name=?, username=?, email=?, phone=?, nip=?, unit_id=?, role=?, is_active=?, position_name=?, url_photo=?, password=? WHERE id=?`;
@@ -301,19 +293,28 @@ app.post('/api/process-transaction', async (req, res) => {
   const conn = await db.getConnection();
   try {
     await conn.beginTransaction();
-    
+
+    // Ambil nama user pemilik request ini (requester), diambil dari DB
+    // supaya tidak bergantung pada data yang dikirim frontend.
+    const [trxRows] = await conn.execute(
+      `SELECT u.full_name AS requester_name 
+       FROM eatk_transaction t 
+       JOIN c_sec_user u ON t.user_id = u.id 
+       WHERE t.id = ?`,
+      [trx_id]
+    );
+    const requesterName = trxRows[0]?.requester_name || 'Unknown User';
+
     // 1. Update status header transaksi
     await conn.execute('UPDATE eatk_transaction SET status="Completed", updated_at=NOW() WHERE id=?', [trx_id]);
 
     for (const item of items) {
-      // Sesuaikan status detail
       const status = item.action === 'approve' ? 'Approved' : 'Rejected';
       const approvedQty = item.action === 'approve' ? item.approved_qty : 0;
-      
-      // PASTIKAN kolom reject_reason diupdate di sini agar masuk ke database
+
       await conn.execute(
         'UPDATE eatk_transaction_detail SET status=?, qty_approved=?, reject_reason=? WHERE id=?', 
-        [status, approvedQty, item.reason || null, item.id] // item.reason dari frontend masuk ke reject_reason
+        [status, approvedQty, item.reason || null, item.id]
       );
 
       if (item.action === 'approve' && approvedQty > 0) {
@@ -328,7 +329,9 @@ app.post('/api/process-transaction', async (req, res) => {
             [item.unit_id, approvedQty, item.item_id]
           );
         }
-        await logStock('IN', item.item_id, approvedQty, actor_name || 'Admin', `Approved TRX #${trx_id}`, conn);
+
+        // actor_name = admin yang approve, requesterName = user yang minta
+        await logStock('IN', item.item_id, approvedQty, actor_name || 'Admin', requesterName, `Approved TRX #${trx_id}`, conn);
       }
     }
 

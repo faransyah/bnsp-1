@@ -137,8 +137,22 @@
                   <span class="absolute -left-[9px] top-1 h-4 w-4 rounded-full border-2 border-white shadow-sm" :class="activity.type === 'masuk' ? 'bg-green-500' : 'bg-amber-500'"></span>
                   <div class="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-1">
                     <div>
-                      <p class="text-sm font-bold text-slate-900 group-hover:text-blue-600 transition-colors">{{ activity.item }} <span class="font-extrabold" :class="activity.type === 'masuk' ? 'text-green-600' : 'text-amber-600'">({{ activity.type === 'masuk' ? '+' : '-' }}{{ activity.qty }})</span></p>
-                      <p class="text-xs text-slate-500 mt-0.5 font-medium">{{ activity.user }} • <span class="capitalize">{{ activity.type }}</span></p>
+                      <p class="text-sm font-bold text-slate-900 group-hover:text-blue-600 transition-colors">
+                        {{ activity.item }}
+                        <span class="font-extrabold" :class="activity.type === 'masuk' ? 'text-green-600' : 'text-amber-600'">
+                          ({{ activity.type === 'masuk' ? '+' : '-' }}{{ activity.qty }})
+                        </span>
+                      </p>
+                      <!-- Jika ada requester (hasil approval), tampilkan siapa yang minta & siapa yang approve.
+                           Jika tidak ada (input manual admin), tampilkan seperti biasa. -->
+                      <p v-if="activity.requester" class="text-xs text-slate-500 mt-0.5 font-medium">
+                        <span class="text-slate-700 font-bold">{{ activity.requester }}</span> mengajukan
+                        <span class="capitalize">{{ activity.type }}</span> •
+                        disetujui oleh <span class="text-blue-600 font-bold">{{ activity.user }}</span>
+                      </p>
+                      <p v-else class="text-xs text-slate-500 mt-0.5 font-medium">
+                        {{ activity.user }} • <span class="capitalize">{{ activity.type }}</span>
+                      </p>
                     </div>
                     <span class="text-[10px] font-bold text-slate-400 bg-slate-50 px-2 py-1 rounded-full whitespace-nowrap border border-slate-100">{{ activity.time }}</span>
                   </div>
@@ -221,6 +235,8 @@ const stats = computed(() => ({
   lowStockCount: store.lowStockItems.length
 }));
 
+// requester_name ikut disertakan dari backend (eatk_stock_log.requester_name)
+// -> null/undefined untuk log input manual admin, terisi untuk hasil approval request user.
 const recentActivity = computed(() => {
   return store.history.slice(0, 10).map(log => ({
     id: log.id,
@@ -228,6 +244,7 @@ const recentActivity = computed(() => {
     item: log.itemName,
     qty: log.qty,
     user: log.actor_name,
+    requester: log.requester_name || null,
     time: formatRelativeTime(log.date)
   }));
 });
@@ -283,9 +300,6 @@ const donutChartOptions = computed(() => ({
 const sortedPendingTransactions = computed(() => store.pendingTransactionList);
 
 const openApprovalModal = (trx) => {
-    // --------------------------------------------------------
-    // FIX PENTING: Menyertakan unit_id dari header transaksi
-    // --------------------------------------------------------
     const items = trx.details.map(d => {
         const masterItem = store.atks.find(a => a.id === d.item_id);
         const unitStockRecord = store.stocks.find(s => s.item_id === d.item_id && s.unit_id === trx.unit_id);
@@ -293,7 +307,7 @@ const openApprovalModal = (trx) => {
         
         return {
             ...d,
-            unit_id: trx.unit_id, // <--- INI KUNCI PERBAIKANNYA
+            unit_id: trx.unit_id,
             itemName: masterItem?.name || 'Unknown Item',
             maxAllocatable: Math.max(0, (masterItem?.max_stock || 100) - currentStock),
             approved_qty: d.qty, 
@@ -320,7 +334,7 @@ const submitBatchProcessing = async () => {
         await store.processBatchTransaction(approvalModal.value.data.id, approvalModal.value.items);
         closeApprovalModal();
         triggerToast('Keputusan berhasil disimpan & stok diperbarui.', 'success');
-        await store.fetchAllData(); // Refresh data segera
+        await store.fetchAllData();
     } catch (e) {
         console.error(e);
         triggerToast('Gagal memproses permintaan.', 'error');
@@ -346,7 +360,6 @@ onMounted(() => {
   updateTime();
   timeInterval = setInterval(updateTime, 1000);
   store.fetchAllData(); 
-  // Polling data tiap 30 detik agar dashboard 'hidup'
   dataPollingInterval = setInterval(() => { store.fetchAllData(); }, 30000);
 });
 

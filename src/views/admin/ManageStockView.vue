@@ -98,6 +98,10 @@
                </select>
             </div>
 
+            <button @click="exportStockToExcel" class="inline-flex items-center justify-center rounded-lg bg-emerald-600 h-10 px-4 text-sm font-bold text-white shadow-sm transition-all hover:bg-emerald-700 hover:shadow-md active:scale-95 whitespace-nowrap">
+              <ArrowDownTrayIcon class="mr-1.5 h-4 w-4" /> Export Excel
+            </button>
+
             <button @click="openStockModal(null)" class="inline-flex items-center justify-center rounded-lg bg-blue-600 h-10 px-4 text-sm font-bold text-white shadow-sm transition-all hover:bg-blue-700 hover:shadow-md active:scale-95 whitespace-nowrap">
               <PlusIcon class="mr-1.5 h-4 w-4" /> Tambah Stok
             </button>
@@ -204,6 +208,11 @@
       </div>
 
       <div v-if="activeTab === 'history'">
+        <div class="flex justify-end mb-4">
+          <button @click="exportHistoryToExcel" class="inline-flex items-center justify-center rounded-lg bg-emerald-600 h-10 px-4 text-sm font-bold text-white shadow-sm transition-all hover:bg-emerald-700 hover:shadow-md active:scale-95 whitespace-nowrap">
+            <ArrowDownTrayIcon class="mr-1.5 h-4 w-4" /> Export Excel
+          </button>
+        </div>
         <div class="overflow-hidden rounded-xl border border-slate-200">
           <table class="min-w-full divide-y divide-slate-200">
             <thead class="bg-slate-50 text-xs font-bold text-slate-500 uppercase">
@@ -212,17 +221,22 @@
                 <th class="px-6 py-4 text-left">Tipe</th>
                 <th class="px-6 py-4 text-left">Barang</th>
                 <th class="px-6 py-4 text-center">Qty</th>
-                <th class="px-6 py-4 text-left">Oleh</th>
+                <th class="px-6 py-4 text-left">Diminta Oleh</th>
+                <th class="px-6 py-4 text-left">Disetujui Oleh</th>
                 <th class="px-6 py-4 text-left">Catatan</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-slate-200 bg-white">
-              <tr v-if="store.history.length === 0"><td colspan="6" class="py-12 text-center text-sm text-slate-500">Belum ada riwayat mutasi.</td></tr>
+              <tr v-if="store.history.length === 0"><td colspan="7" class="py-12 text-center text-sm text-slate-500">Belum ada riwayat mutasi.</td></tr>
               <tr v-for="log in paginatedHistory" :key="log.id" class="text-xs text-slate-600">
                 <td class="px-6 py-4 font-mono">{{ formatDateTime(log.date) }}</td>
                 <td class="px-6 py-4"><span class="px-2 py-0.5 rounded border" :class="log.type === 'IN' ? 'bg-green-50 text-green-700 border-green-200' : 'bg-orange-50 text-orange-700 border-orange-200'">{{ log.type }}</span></td>
                 <td class="px-6 py-4 font-bold text-slate-800">{{ log.itemName }}</td>
                 <td class="px-6 py-4 text-center font-black" :class="log.type === 'IN' ? 'text-green-600' : 'text-orange-600'">{{ log.type === 'IN' ? '+' : '-' }}{{ log.qty }}</td>
+                <td class="px-6 py-4">
+                  <span v-if="log.requester_name" class="font-semibold text-slate-700">{{ log.requester_name }}</span>
+                  <span v-else class="text-slate-300">-</span>
+                </td>
                 <td class="px-6 py-4 font-semibold">{{ log.actor_name }}</td>
                 <td class="px-6 py-4 italic">{{ log.note }}</td>
               </tr>
@@ -283,11 +297,13 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import axios from 'axios';
+import * as XLSX from 'xlsx';
 import { useInventoryStore } from '../../stores/inventoryStore';
 import StockFormModal from '../../components/admin/StockFormModal.vue';
 import { 
   MagnifyingGlassIcon, PlusIcon, ArchiveBoxIcon, XMarkIcon, CalendarDaysIcon, 
-  CheckCircleIcon, XCircleIcon, NoSymbolIcon, MapPinIcon, ChevronLeftIcon, ChevronRightIcon
+  CheckCircleIcon, XCircleIcon, NoSymbolIcon, MapPinIcon, ChevronLeftIcon, ChevronRightIcon,
+  ArrowDownTrayIcon
 } from '@heroicons/vue/24/outline';
 import StockDetailModal from '../../components/admin/StockDetailModal.vue';
 
@@ -477,6 +493,83 @@ const confirmDeleteAction = async () => {
 };
 
 const formatDateTime = (str) => new Date(str).toLocaleString('id-ID', { dateStyle: 'short', timeStyle: 'short' });
+
+// --- EXPORT KE EXCEL ---
+const buildExportFilename = (prefix) => {
+  const now = new Date();
+  const stamp = now.toISOString().slice(0, 19).replace(/[-:T]/g, '');
+  return `${prefix}_${stamp}.xlsx`;
+};
+
+const exportStockToExcel = () => {
+  try {
+    if (filteredStock.value.length === 0) {
+      return triggerToast('Tidak ada data stok untuk di-export.', 'error');
+    }
+
+    const rows = filteredStock.value.map(item => {
+      const atk = getATK(item.item_id);
+      return {
+        'Kode Barang': atk.code,
+        'Nama Barang': atk.name,
+        'Unit Kerja': getUnitAlias(item.unit_id),
+        'Stok': item.stock,
+        'Satuan': atk.uom,
+        'Stok Minimum': item.stock_min,
+        'Harga Beli (Rp)': item.price,
+        'Status': item.status
+      };
+    });
+
+    const ws = XLSX.utils.json_to_sheet(rows);
+    ws['!cols'] = [
+      { wch: 16 }, { wch: 30 }, { wch: 18 }, { wch: 10 },
+      { wch: 10 }, { wch: 14 }, { wch: 16 }, { wch: 10 }
+    ];
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Stok Fisik Unit');
+    XLSX.writeFile(wb, buildExportFilename('Stok_ATK'));
+
+    triggerToast('Data stok berhasil di-export.', 'success');
+  } catch (error) {
+    console.error(error);
+    triggerToast('Gagal export data stok.', 'error');
+  }
+};
+
+const exportHistoryToExcel = () => {
+  try {
+    if (store.history.length === 0) {
+      return triggerToast('Tidak ada riwayat mutasi untuk di-export.', 'error');
+    }
+
+    const rows = store.history.map(log => ({
+      'Waktu': formatDateTime(log.date),
+      'Tipe': log.type,
+      'Barang': log.itemName,
+      'Qty': log.type === 'IN' ? log.qty : -log.qty,
+      'Diminta Oleh': log.requester_name || '-',
+      'Disetujui Oleh': log.actor_name,
+      'Catatan': log.note || ''
+    }));
+
+    const ws = XLSX.utils.json_to_sheet(rows);
+    ws['!cols'] = [
+      { wch: 16 }, { wch: 8 }, { wch: 30 }, { wch: 8 },
+      { wch: 20 }, { wch: 20 }, { wch: 28 }
+    ];
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Log Mutasi Stok');
+    XLSX.writeFile(wb, buildExportFilename('Log_Mutasi_Stok'));
+
+    triggerToast('Riwayat mutasi berhasil di-export.', 'success');
+  } catch (error) {
+    console.error(error);
+    triggerToast('Gagal export riwayat mutasi.', 'error');
+  }
+};
 
 onMounted(() => {
   updateTime();

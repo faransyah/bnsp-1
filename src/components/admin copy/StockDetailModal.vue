@@ -127,12 +127,10 @@
                     <table class="min-w-full divide-y divide-slate-100">
                       <thead>
                         <tr class="text-[9px] font-black text-slate-400 uppercase tracking-[0.15em] bg-slate-50/30">
-                       <!-- SESUDAH -->
-<th class="px-6 py-3 text-left">Waktu</th>
-<th class="px-6 py-3 text-center">Tipe</th>
-<th class="px-6 py-3 text-right">Qty</th>
-<th class="px-6 py-3 text-left">Diminta Oleh</th>
-<th class="px-6 py-3 text-left">Disetujui Oleh</th>
+                          <th class="px-6 py-3 text-left">Waktu</th>
+                          <th class="px-6 py-3 text-center">Tipe</th>
+                          <th class="px-6 py-3 text-right">Qty</th>
+                          <th class="px-6 py-3 text-left">Oleh</th>
                         </tr>
                       </thead>
                       <tbody class="divide-y divide-slate-50">
